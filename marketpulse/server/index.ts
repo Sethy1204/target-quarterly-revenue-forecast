@@ -8,6 +8,8 @@ import { loadConfig } from './config.js';
 
 dotenv.config({ quiet: true } as Parameters<typeof dotenv.config>[0]);
 
+// `npm run start:demo` passes --demo (works on Windows, macOS and Linux shells alike).
+if (process.argv.includes('--demo')) process.env.MARKETPULSE_MODE = 'demo';
 const cfg = loadConfig();
 const app = createApp({ cfg });
 
@@ -20,12 +22,12 @@ if (existsSync(path.join(dist, 'index.html'))) {
     if (req.method !== 'GET' || req.path.startsWith('/api/')) return next();
     res.sendFile(path.join(dist, 'index.html'));
   });
-} else if (process.env.NODE_ENV === 'production') {
-  console.warn('[marketpulse] dist/ not found — run "npm run build" first.');
+} else {
+  console.warn('[marketpulse] dist/ not found — API only. Run "npm run build" to serve the dashboard here, or use "npm run dev".');
 }
 
 app.listen(cfg.port, () => {
-  console.log(`[marketpulse] API listening on http://localhost:${cfg.port} (mode: ${cfg.mode})`);
+  console.log(`[marketpulse] Open http://localhost:${cfg.port} (mode: ${cfg.mode})`);
   const missing = missingSetup(cfg);
   if (missing.length) {
     console.log('[marketpulse] Missing configuration (copy .env.example to .env or run "npm run setup"):');
