@@ -32,6 +32,7 @@ export function ChartPanel(p: Props) {
   const ids = p.mode === 'single' ? [p.listingId] : p.compareIds;
   const [data, setData] = useState<Record<string, ChartResponse | { error: string }>>({});
   const [loading, setLoading] = useState(false);
+  const [retryToken, setRetryToken] = useState(0);
   const key = `${ids.join(',')}|${p.range}`;
   const tokenDep = p.range === '1D' ? p.refreshToken : 0;
 
@@ -49,12 +50,17 @@ export function ChartPanel(p: Props) {
       if (cancelled) return;
       setData(Object.fromEntries(rows));
       setLoading(false);
+      // Re-request series that were held back by the provider's rate budget.
+      const waits = rows.map(([, r]) => ('retryAfterSec' in r ? r.retryAfterSec : undefined)).filter((x): x is number => typeof x === 'number');
+      if (waits.length) retryTimer = setTimeout(() => setRetryToken((t) => t + 1), Math.min(...waits) * 1000 + 500);
     });
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, tokenDep]);
+  }, [key, tokenDep, retryToken]);
 
   const responses = ids.map((id) => ({ id, r: data[id] }));
   const problems = responses

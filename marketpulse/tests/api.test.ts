@@ -12,7 +12,7 @@ function upstream() {
   return fakeFetch((u) => {
     if (u.hostname === 'td.test') {
       if (u.pathname === '/quote') {
-        const mic = u.searchParams.get('mic_code')!;
+        const mic = u.searchParams.get('mic_code') ?? (u.searchParams.get('exchange') === 'NYSE' ? 'XNYS' : 'XNGS');
         const syms = u.searchParams.get('symbol')!.split(',');
         const ccy = mic === 'XTSE' ? 'CAD' : 'USD';
         const one = (s: string) => tdQuote(s, mic, ccy, '50.00', '49.00', '2026-11-03T14:59:00Z');

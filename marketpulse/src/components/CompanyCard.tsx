@@ -8,6 +8,8 @@ interface Props {
   quote: QuoteView | undefined;
   error: string | undefined;
   loading: boolean;
+  /** Queued until the provider's rate budget allows a request. */
+  pending: boolean;
   fundamentals: Fundamentals | undefined;
   earnings: EarningsEvent | undefined;
   timeZone: string;
@@ -71,12 +73,17 @@ export function CompanyCard(p: Props) {
         {q && <span className={`badge session-${q.session.state}`}>{q.session.label}</span>}
       </div>
 
+      {!q && !p.loading && p.pending && (
+        <div className="skeleton-block" aria-busy="true">
+          <span className="spinner" /> Queued — waiting for the provider's per-minute request budget. Loads automatically shortly.
+        </div>
+      )}
       {!q && p.loading && (
         <div className="skeleton-block" aria-busy="true">
           <span className="spinner" /> Loading quote…
         </div>
       )}
-      {!q && !p.loading && (
+      {!q && !p.loading && !p.pending && (
         <div className="empty-block">
           <b>Quote unavailable.</b>
           <div className="muted small">{p.error ?? 'No data yet.'}</div>

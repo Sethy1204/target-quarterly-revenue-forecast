@@ -28,6 +28,9 @@ export class QuoteService {
   private rateLimitedUntil = 0;
   private lastForcedAt = 0;
   private inflight: Promise<void> | null = null;
+  /** Listings waiting for rate budget (not failures). */
+  private pending = new Set<string>();
+  private deferredUntil = 0;
 
   constructor(
     private provider: QuoteProvider | null,
@@ -78,7 +81,7 @@ export class QuoteService {
         this.lastForcedAt = now;
         due = listings;
       }
-      if (due.length > 0 && now >= this.rateLimitedUntil) {
+      if (due.length > 0 && now >= this.rateLimitedUntil && now >= this.deferredUntil) {
         if (this.inflight) await this.inflight;
         else {
           this.inflight = this.fetch(due).finally(() => (this.inflight = null));
@@ -101,7 +104,10 @@ export class QuoteService {
       for (const q of res.quotes) {
         this.entries.set(q.listingId, q);
         this.failures.delete(q.listingId);
+        this.pending.delete(q.listingId);
       }
+      for (const id of res.deferred ?? []) this.pending.add(id);
+      this.deferredUntil = res.deferred?.length ? this.now() + Math.max(res.retryAfterMs ?? 0, 1_000) : 0;
       for (const e of res.errors) {
         const l = getListing(e.listingId);
         if (l) fail(l, e.message);
@@ -170,7 +176,8 @@ export class QuoteService {
       else if (q) next = Math.min(next, Date.parse(q.fetchedAt) + intervalSec * 1000);
       else next = now;
     }
-    next = Math.max(next, this.rateLimitedUntil, now + 5_000);
+    const waiting = listings.filter((l) => this.pending.has(l.id)).map((l) => l.id);
+    next = Math.max(next, this.rateLimitedUntil, waiting.length ? this.deferredUntil : 0, now + 5_000);
 
     const gate = this.provider?.gate;
     const snap = gate?.snapshot();
@@ -185,6 +192,6 @@ export class QuoteService {
       rateLimitResetAt: this.rateLimitedUntil > now ? new Date(this.rateLimitedUntil).toISOString() : (snap?.cooldownUntil ?? null),
       budget: snap ? { perMinute: snap.perMinute, perDay: snap.perDay, usedToday: snap.usedToday } : undefined,
     };
-    return { quotes, errors, status, demo: this.demo };
+    return { quotes, errors, pending: waiting, status, demo: this.demo };
   }
 }

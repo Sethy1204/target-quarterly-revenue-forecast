@@ -25,6 +25,24 @@ export interface FetchJsonOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
+/** Extracts a provider's error message from a 4xx body (JSON "message"/"error" or short text). */
+async function providerMessage(res: Response): Promise<string> {
+  try {
+    const text = (await res.text()).trim();
+    if (!text) return '';
+    try {
+      const j = JSON.parse(text) as Record<string, unknown>;
+      const m = j.message ?? j.error;
+      if (typeof m === 'string') return m.slice(0, 300);
+    } catch {
+      /* not JSON */
+    }
+    return text.length <= 200 ? text : '';
+  } catch {
+    return '';
+  }
+}
+
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export function redactText(text: string, secrets: string[] = []): string {
@@ -59,9 +77,14 @@ export async function fetchJson<T = unknown>(url: string, opts: FetchJsonOptions
       const ra = Number(res.headers.get('retry-after'));
       throw new ProviderError('Provider rate limit reached (HTTP 429)', 'rate-limit', Number.isFinite(ra) && ra > 0 ? ra * 1000 : undefined);
     }
-    if (res.status === 401) throw new ProviderError('Provider rejected the API key (HTTP 401)', 'auth');
-    if (res.status === 403) throw new ProviderError('Access denied by provider — plan may not include this data (HTTP 403)', 'plan');
-    if (res.status === 404) throw new ProviderError('Not found at provider (HTTP 404)', 'not-found');
+    if (res.status >= 400 && res.status < 500) {
+      const detail = redactText(await providerMessage(res), redact);
+      const sfx = detail ? `: ${detail}` : '';
+      if (res.status === 401) throw new ProviderError(`Provider rejected the API key (HTTP 401)${sfx}`, 'auth');
+      if (res.status === 403) throw new ProviderError(`Access denied by provider — plan may not include this data (HTTP 403)${sfx}`, 'plan');
+      if (res.status === 404) throw new ProviderError(`Not found at provider (HTTP 404)${sfx}`, 'not-found');
+      throw new ProviderError(`Provider rejected the request (HTTP ${res.status})${sfx}`, 'bad-response');
+    }
     if (res.status >= 500) {
       lastErr = new ProviderError(`Provider server error (HTTP ${res.status})`, 'server');
       continue;

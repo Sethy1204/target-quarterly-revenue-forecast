@@ -70,6 +70,15 @@ export class RateGate {
     return wait;
   }
 
+  /** Whole credits that can be spent right now (0 during a cooldown). */
+  available(): number {
+    this.refill();
+    if (this.cooldownUntil > this.now()) return 0;
+    let n = this.perMinute === null ? Number.MAX_SAFE_INTEGER : Math.floor(this.tokens + 1e-9);
+    if (this.perDay !== null) n = Math.min(n, this.perDay - this.usedToday);
+    return Math.max(0, n);
+  }
+
   /** Spend credits or throw a rate-limit ProviderError (no request is sent). */
   take(cost: number): void {
     const wait = this.msUntil(cost);

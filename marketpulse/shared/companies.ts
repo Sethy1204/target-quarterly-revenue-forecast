@@ -27,7 +27,8 @@ export interface ListingDef {
   /** Default listing shown on the company card. */
   primary: boolean;
   providerSymbols: {
-    twelvedata: { symbol: string; mic_code: string };
+    /** Query params identifying the listing at Twelve Data (symbol + exchange or MIC). */
+    twelvedata: { symbol: string; params: Record<string, string> };
     finnhub: string;
   };
 }
@@ -69,7 +70,9 @@ const L = (
     shareClass,
     primary,
     providerSymbols: {
-      twelvedata: { symbol, mic_code: mic },
+      // US listings are identified by exchange name (Nasdaq stocks can be reported under tier
+      // MICs such as XNGS), TSX by its MIC. TELUS "T" is therefore never sent unqualified.
+      twelvedata: { symbol, params: exchange === 'TSX' ? { mic_code: 'XTSE' } : { exchange } },
       // Finnhub uses an exchange suffix for non-US listings (".TO" = Toronto).
       finnhub: exchange === 'TSX' ? `${symbol}.TO` : symbol,
     },
@@ -175,6 +178,13 @@ export function getListing(id: string): ListingDef | undefined {
 export function getCompany(id: string): CompanyDef | undefined {
   return COMPANIES.find((c) => c.id === id);
 }
+
+/** MICs a provider may report for each exchange (Nasdaq has per-tier MICs). */
+export const ACCEPTED_MICS: Record<ExchangeCode, string[]> = {
+  NASDAQ: ['XNAS', 'XNGS', 'XNMS', 'XNCM'],
+  NYSE: ['XNYS'],
+  TSX: ['XTSE'],
+};
 
 /** IANA timezone in which each exchange operates. */
 export const EXCHANGE_TZ: Record<ExchangeCode, string> = {

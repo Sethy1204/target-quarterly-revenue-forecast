@@ -40,18 +40,46 @@ describe('Twelve Data adapter', () => {
   it('batches per exchange and always sends TELUS "T" with mic_code=XTSE', async () => {
     const { fetch, calls } = fakeFetch((u) => {
       const mic = u.searchParams.get('mic_code');
+      const ex = u.searchParams.get('exchange');
       const syms = u.searchParams.get('symbol')!.split(',');
       if (mic === 'XTSE') return jsonResponse(tdQuote('T', 'XTSE', 'CAD', '20.10', '20.00', '2026-11-03T20:59:00Z'));
-      return jsonResponse(Object.fromEntries(syms.map((s) => [s, tdQuote(s, mic!, 'USD', '100', '99', '2026-11-03T15:00:00Z')])));
+      // Nasdaq stocks may come back with a tier MIC such as XNGS — that must be accepted.
+      const m = ex === 'NYSE' ? 'XNYS' : 'XNGS';
+      return jsonResponse(syms.length === 1 ? tdQuote(syms[0], m, 'USD', '100', '99', '2026-11-03T15:00:00Z') : Object.fromEntries(syms.map((s) => [s, tdQuote(s, m, 'USD', '100', '99', '2026-11-03T15:00:00Z')])));
     });
     const td = new TwelveDataProvider(cfg.twelvedata, fetch);
     const r = await td.fetchQuotes([L('T:XTSE'), L('MSFT:XNAS'), L('TSLA:XNAS'), L('JNJ:XNYS')]);
     expect(r.errors).toEqual([]);
     expect(r.quotes.map((q) => `${q.symbol}:${q.currency}`).sort()).toEqual(['JNJ:USD', 'MSFT:USD', 'T:CAD', 'TSLA:USD']);
-    const tsxCall = calls.find((c) => c.url.searchParams.get('mic_code') === 'XTSE')!;
-    expect(tsxCall.url.searchParams.get('symbol')).toBe('T');
-    expect(calls.every((c) => !(c.url.searchParams.get('symbol') === 'T' && c.url.searchParams.get('mic_code') !== 'XTSE'))).toBe(true);
-    expect(calls.find((c) => c.url.searchParams.get('mic_code') === 'XNAS')!.url.searchParams.get('symbol')).toBe('MSFT,TSLA');
+    const tCalls = calls.filter((c) => c.url.searchParams.get('symbol')!.split(',').includes('T'));
+    expect(tCalls).toHaveLength(1);
+    expect(tCalls[0].url.searchParams.get('mic_code')).toBe('XTSE');
+    expect(tCalls[0].url.searchParams.get('symbol')).toBe('T');
+    const nas = calls.find((c) => c.url.searchParams.get('exchange') === 'NASDAQ')!;
+    expect(nas.url.searchParams.get('symbol')).toBe('MSFT,TSLA');
+    expect(nas.url.searchParams.get('mic_code')).toBeNull();
+  });
+
+  it('requests only what the per-minute budget allows and defers the rest (no errors)', async () => {
+    let t = Date.parse('2026-11-03T15:00:00Z');
+    const { RateGate } = await import('../server/rateGate');
+    const gate = new RateGate({ name: 'TD', perMinute: 3, perDay: null, now: () => t });
+    const { fetch, calls } = fakeFetch((u) => {
+      const syms = u.searchParams.get('symbol')!.split(',');
+      const one = (s: string) => tdQuote(s, 'XNGS', 'USD', '10', '9', '2026-11-03T15:00:00Z');
+      return jsonResponse(syms.length === 1 ? one(syms[0]) : Object.fromEntries(syms.map((s) => [s, one(s)])));
+    });
+    const td = new TwelveDataProvider(cfg.twelvedata, fetch, gate);
+    const ls = ['SPCX:XNAS', 'TTWO:XNAS', 'CRWV:XNAS', 'TSLA:XNAS', 'MSFT:XNAS'].map(L);
+    const r = await td.fetchQuotes(ls);
+    expect(r.quotes.map((q) => q.symbol)).toEqual(['SPCX', 'TTWO', 'CRWV']);
+    expect(r.errors).toEqual([]);
+    expect(r.deferred).toEqual(['TSLA:XNAS', 'MSFT:XNAS']);
+    expect(r.retryAfterMs).toBe(20_000);
+    expect(calls).toHaveLength(1);
+    t += 40_000;
+    const r2 = await td.fetchQuotes(ls.slice(3));
+    expect(r2.quotes.map((q) => q.symbol)).toEqual(['TSLA', 'MSFT']);
   });
 
   it('rejects quotes whose currency or exchange do not match (e.g. AT&T returned for "T")', async () => {
@@ -70,9 +98,19 @@ describe('Twelve Data adapter', () => {
     expect(r.errors).toEqual([{ listingId: 'SPCX:XNAS', message: expect.stringContaining('symbol not found') }]);
   });
 
-  it('maps Twelve Data JSON 429 bodies to rate-limit errors', async () => {
+  it('maps Twelve Data JSON 429 bodies to a cooldown and defers (not fails) the listings', async () => {
     const { fetch } = fakeFetch(() => jsonResponse({ status: 'error', code: 429, message: 'You have run out of API credits' }));
-    await expect(new TwelveDataProvider(cfg.twelvedata, fetch).fetchQuotes([L('MSFT:XNAS')])).rejects.toMatchObject({ kind: 'rate-limit' });
+    const td = new TwelveDataProvider(cfg.twelvedata, fetch);
+    const r = await td.fetchQuotes([L('MSFT:XNAS')]);
+    expect(r.deferred).toEqual(['MSFT:XNAS']);
+    expect(r.errors).toEqual([]);
+    expect(td.gate.available()).toBe(0); // cooldown active
+  });
+
+  it("surfaces the provider's own message on HTTP 4xx", async () => {
+    const { fetch } = fakeFetch(() => jsonResponse({ code: 404, message: 'symbol or figi parameter is missing or invalid', status: 'error' }, 404));
+    const r = await new TwelveDataProvider(cfg.twelvedata, fetch).fetchQuotes([L('SPCX:XNAS')]);
+    expect(r.errors[0].message).toBe('Not found at provider (HTTP 404): symbol or figi parameter is missing or invalid');
   });
 
   it('parses time series into ascending UTC points, skipping missing closes', () => {

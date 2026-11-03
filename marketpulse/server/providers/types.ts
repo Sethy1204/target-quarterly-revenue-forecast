@@ -11,6 +11,10 @@ import type { RateGate } from '../rateGate.js';
 export interface QuoteBatchResult {
   quotes: Quote[];
   errors: { listingId: string; message: string }[];
+  /** Listings not requested yet because the rate budget is spent (not a failure). */
+  deferred?: string[];
+  /** When deferred listings can be requested. */
+  retryAfterMs?: number;
 }
 
 export interface QuoteProvider {

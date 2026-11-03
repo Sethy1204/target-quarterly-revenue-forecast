@@ -140,6 +140,34 @@ describe('QuoteService', () => {
     expect(p.calls).toEqual([['MSFT:XNAS'], ['GOOG:XNAS']]);
   });
 
+  it('queues listings deferred by the rate budget without reporting them as failures', async () => {
+    let t = T0;
+    const p = new MockProvider(null, () => t);
+    const orig = p.fetchQuotes.bind(p);
+    let first = true;
+    p.fetchQuotes = async (ls) => {
+      if (first) {
+        first = false;
+        const r = await orig(ls.slice(0, 1));
+        return { ...r, deferred: ls.slice(1).map((l) => l.id), retryAfterMs: 20_000 };
+      }
+      return orig(ls);
+    };
+    const s = new QuoteService(p, cfg, false, () => t);
+    const r = await s.get(ids);
+    expect(r.quotes.map((q) => q.listingId)).toEqual(['MSFT:XNAS']);
+    expect(r.errors).toEqual([]);
+    expect(r.pending).toEqual(['T:XTSE']);
+    expect(Date.parse(r.status.nextRefreshAt!)).toBe(T0 + 20_000);
+    t += 5_000;
+    await s.get(ids);
+    expect(p.calls).toHaveLength(1); // waits for the budget
+    t += 16_000;
+    const r2 = await s.get(ids);
+    expect(r2.pending).toEqual([]);
+    expect(r2.quotes).toHaveLength(2);
+  });
+
   it('returns explicit errors (not empty prices) when no provider is configured', async () => {
     const r = await new QuoteService(null, cfg, false, () => T0).get(ids);
     expect(r.quotes).toEqual([]);

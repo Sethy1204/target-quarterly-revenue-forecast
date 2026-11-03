@@ -69,6 +69,8 @@ export interface FeedStatus {
 export interface QuotesResponse {
   quotes: QuoteView[];
   errors: { listingId: string; message: string }[];
+  /** Listings queued until the provider's rate budget allows another request. */
+  pending: string[];
   status: FeedStatus;
   demo: boolean;
 }
@@ -94,6 +96,8 @@ export interface ChartResponse {
   demo: boolean;
   /** Set when the series could not be fetched (e.g. plan does not include intraday TSX data). */
   unavailableReason?: string;
+  /** Set when the request was held back by the rate budget; the UI retries after this many seconds. */
+  retryAfterSec?: number;
 }
 
 export type NewsKind = 'company-announcement' | 'not-specified';

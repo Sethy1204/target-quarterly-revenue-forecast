@@ -56,7 +56,11 @@ export class ChartService {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (stale) return { ...stale, unavailableReason: `Showing cached series from ${stale.fetchedAt}; refresh failed: ${msg}` };
-      const hint = e instanceof ProviderError && (e.kind === 'plan' || e.kind === 'not-found') ? ' This range/exchange may not be included in your provider plan.' : '';
+      if (e instanceof ProviderError && e.kind === 'rate-limit') {
+        const retryAfterSec = Math.max(2, Math.ceil((e.retryAfterMs ?? 60_000) / 1000));
+        return { ...this.base(listing, range), interval: '', points: [], fetchedAt: new Date(this.now()).toISOString(), unavailableReason: `Waiting for provider rate budget — retrying automatically in ${retryAfterSec} s.`, retryAfterSec };
+      }
+      const hint = e instanceof ProviderError && (e.kind === 'plan' || e.kind === 'not-found') ? ' This symbol/range may not be included in your provider plan.' : '';
       return { ...this.base(listing, range), interval: '', points: [], fetchedAt: new Date(this.now()).toISOString(), unavailableReason: `${msg}${hint}` };
     }
   }

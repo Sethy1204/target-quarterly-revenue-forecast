@@ -1,4 +1,4 @@
-import { EXCHANGE_TZ, type ExchangeCode, type ListingDef } from '../../shared/companies.js';
+import { ACCEPTED_MICS, EXCHANGE_TZ, type ExchangeCode, type ListingDef } from '../../shared/companies.js';
 import { computeChange, localParts, shiftLocalDate, toNum, zonedLocalToEpoch } from '../../shared/market.js';
 import type { ChartPoint, ChartRange, Quote } from '../../shared/types.js';
 import { regionOf, type AppConfig, type TimingDecl } from '../config.js';
@@ -27,6 +27,12 @@ function asError(body: Raw): ProviderError | null {
     return new ProviderError(`Twelve Data: ${msg}`, 'bad-response');
   }
   return null;
+}
+
+function throwIfError(body: Raw): Raw {
+  const e = asError(body);
+  if (e) throw e;
+  return body;
 }
 
 function epochToIso(v: unknown): string | null {
@@ -133,23 +139,32 @@ export class TwelveDataProvider implements QuoteProvider, ChartProvider {
   }
 
   async fetchQuotes(listings: ListingDef[]): Promise<QuoteBatchResult> {
-    const out: QuoteBatchResult = { quotes: [], errors: [] };
-    // Group by MIC: one batch request per exchange keeps symbols unambiguous
+    const out: QuoteBatchResult = { quotes: [], errors: [], deferred: [] };
+    // One batch request per exchange keeps symbols unambiguous
     // (TSX "T" = TELUS is always sent with mic_code=XTSE, never bare).
     const groups = new Map<string, ListingDef[]>();
     for (const l of listings) {
-      const k = l.providerSymbols.twelvedata.mic_code;
+      const k = JSON.stringify(l.providerSymbols.twelvedata.params);
       groups.set(k, [...(groups.get(k) ?? []), l]);
     }
     const extra: Record<string, string> = this.cfg.prepost ? { prepost: 'true' } : {};
-    for (const [mic, group] of groups) {
+    const defer = (ls: ListingDef[]) => out.deferred!.push(...ls.map((l) => l.id));
+    for (const [, all] of groups) {
+      // Only request as many symbols as the credit budget allows right now; the rest wait.
+      const n = Math.min(all.length, this.gate.available());
+      const group = all.slice(0, n);
+      if (n < all.length) defer(all.slice(n));
+      if (group.length === 0) continue;
       try {
+        // Top-level error bodies are thrown inside gate.run so an in-body 429 starts the cooldown.
         const body = await this.gate.run(this.costFor(group), () =>
-          this.get('/quote', { symbol: group.map((l) => l.providerSymbols.twelvedata.symbol).join(','), mic_code: mic, ...extra }),
+          this.get('/quote', {
+            symbol: group.map((l) => l.providerSymbols.twelvedata.symbol).join(','),
+            ...group[0].providerSymbols.twelvedata.params,
+            ...extra,
+          }).then(throwIfError),
         );
         const fetchedAt = new Date();
-        const top = asError(body);
-        if (top) throw top;
         for (const l of group) {
           // Single-symbol responses are the quote object itself; batch responses are keyed by symbol.
           const raw = (group.length === 1 ? body : (body[l.providerSymbols.twelvedata.symbol] as Raw | undefined)) ?? null;
@@ -162,8 +177,8 @@ export class TwelveDataProvider implements QuoteProvider, ChartProvider {
             out.errors.push({ listingId: l.id, message: e.message });
             continue;
           }
-          if (typeof raw.mic_code === 'string' && raw.mic_code !== l.mic) {
-            out.errors.push({ listingId: l.id, message: `Exchange mismatch: provider returned ${raw.mic_code}, expected ${l.mic}. Quote discarded.` });
+          if (typeof raw.mic_code === 'string' && !ACCEPTED_MICS[l.exchange].includes(raw.mic_code)) {
+            out.errors.push({ listingId: l.id, message: `Exchange mismatch: provider returned ${raw.mic_code}, expected ${l.exchange}. Quote discarded.` });
             continue;
           }
           const q = parseTwelveDataQuote(raw, l, fetchedAt);
@@ -174,11 +189,16 @@ export class TwelveDataProvider implements QuoteProvider, ChartProvider {
           out.quotes.push(q);
         }
       } catch (e) {
-        if (e instanceof ProviderError && (e.kind === 'rate-limit' || e.kind === 'auth')) throw e;
+        if (e instanceof ProviderError && e.kind === 'auth') throw e;
+        if (e instanceof ProviderError && e.kind === 'rate-limit') {
+          defer(group);
+          continue;
+        }
         const msg = e instanceof Error ? e.message : String(e);
         for (const l of group) out.errors.push({ listingId: l.id, message: msg });
       }
     }
+    if (out.deferred!.length) out.retryAfterMs = this.gate.msUntil(1);
     return out;
   }
 
@@ -187,14 +207,12 @@ export class TwelveDataProvider implements QuoteProvider, ChartProvider {
     const tz = EXCHANGE_TZ[listing.exchange];
     const params: Record<string, string> = {
       symbol: listing.providerSymbols.twelvedata.symbol,
-      mic_code: listing.providerSymbols.twelvedata.mic_code,
+      ...listing.providerSymbols.twelvedata.params,
       interval: spec.interval,
       outputsize: String(spec.outputsize),
     };
     if (spec.start) params.start_date = spec.start(now, tz);
-    const body = await this.gate.run(1, () => this.get('/time_series', params));
-    const e = asError(body);
-    if (e) throw e;
+    const body = await this.gate.run(1, () => this.get('/time_series', params).then(throwIfError));
     if (body.meta && typeof (body.meta as Raw).currency === 'string' && (body.meta as Raw).currency !== listing.currency) {
       throw new ProviderError(`Currency mismatch in series: ${(body.meta as Raw).currency} vs ${listing.currency}`, 'bad-response');
     }

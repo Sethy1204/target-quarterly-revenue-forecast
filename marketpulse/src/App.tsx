@@ -260,6 +260,7 @@ export function App() {
                     quote={quoteMap.get(lid)}
                     error={errorMap.get(lid) ?? (quotes.data ? undefined : (quotes.error ?? undefined))}
                     loading={!quotes.data && !quotes.error}
+                    pending={!!quotes.data?.pending.includes(lid) && !errorMap.has(lid)}
                     fundamentals={fundamentals.data?.items.find((f) => f.companyId === cid)}
                     earnings={nextEarnings(cid)}
                     timeZone={tz}

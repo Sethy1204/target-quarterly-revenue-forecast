@@ -38,7 +38,8 @@ export function startMockUpstream(port: number): Promise<{ server: Server; state
       res.end(JSON.stringify(body));
     };
     if (u.pathname === '/td/quote') {
-      const mic = u.searchParams.get('mic_code') ?? 'XNAS';
+      // Real-world shape: Nasdaq names can come back with tier MIC XNGS.
+      const mic = u.searchParams.get('mic_code') ?? (u.searchParams.get('exchange') === 'NYSE' ? 'XNYS' : 'XNGS');
       const syms = (u.searchParams.get('symbol') ?? '').split(',');
       return send(syms.length === 1 ? quote(syms[0], mic) : Object.fromEntries(syms.map((s) => [s, quote(s, mic)])));
     }

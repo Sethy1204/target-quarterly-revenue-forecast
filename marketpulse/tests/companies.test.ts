@@ -9,7 +9,8 @@ describe('ticker / exchange mapping', () => {
     expect(t.mic).toBe('XTSE');
     expect(t.currency).toBe('CAD');
     expect(t.primary).toBe(true);
-    expect(t.providerSymbols.twelvedata).toEqual({ symbol: 'T', mic_code: 'XTSE' });
+    expect(t.providerSymbols.twelvedata).toEqual({ symbol: 'T', params: { mic_code: 'XTSE' } });
+    expect(getListing('MSFT:XNAS')!.providerSymbols.twelvedata.params).toEqual({ exchange: 'NASDAQ' });
     expect(t.providerSymbols.finnhub).toBe('T.TO');
   });
 
